@@ -1,0 +1,25 @@
+{
+  "name": "facebook-stalker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandonros/facebook-stalker.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/brandonros/facebook-stalker/issues"
+  },
+  "homepage": "https://github.com/brandonros/facebook-stalker#readme",
+  "dependencies": {
+    "bluebird": "^3.5.0",
+    "cheerio": "^0.22.0",
+    "request": "^2.80.0",
+    "request-promise": "^4.1.1"
+  }
+}
