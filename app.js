@@ -3,9 +3,6 @@ var rp = require('request-promise');
 var cheerio = require('cheerio');
 var fs = require('fs');
 
-var username = process.argv[2];;
-var cookie = process.argv[3];
-
 function extractData(body) {
   var $ = cheerio.load(body);
 
@@ -33,7 +30,7 @@ function extractData(body) {
   return results;
 }
 
-function getFriends(url, startIndex) {
+function getFriends(cookie, url, startIndex) {
   var options = {
     method: 'GET',
     uri: url + '&startindex=' + startIndex,
@@ -48,7 +45,7 @@ function getFriends(url, startIndex) {
   return rp(options);
 }
 
-function getProfile(url) {
+function getProfile(cookie, url) {
   var options = {
     method: 'GET',
     uri: url,
@@ -72,6 +69,10 @@ function extractNumFriends(body) {
 
   var results = exp.exec(text);
 
+  if (!results) {
+    return 0;
+  }
+
   return results[1];
 }
 
@@ -81,29 +82,36 @@ function extractFriendsUrl(body) {
   return 'https://m.facebook.com' + $('#root > div.be.bf > div.cc > div:nth-child(2) > div > a').attr('href');
 }
 
-getProfile('https://m.facebook.com/' + username)
-.then(function (body) {
-  var numFriends = extractNumFriends(body);
-  var friendsUrl = extractFriendsUrl(body);
+function crawlUser(cookie, username) {
+  return getProfile(cookie, 'https://m.facebook.com/' + username)
+    .then(function (body) {
+      var numFriends = extractNumFriends(body);
+      var friendsUrl = extractFriendsUrl(body);
 
-  var startIndices = [];
+      var startIndices = [];
 
-  for (var i = 0; i < numFriends; i += 20) {
-    startIndices.push(i);
-  }
+      for (var i = 0; i < numFriends; i += 20) {
+        startIndices.push(i);
+      }
 
-  return startIndices.reduce(function (prev, startIndex) {
-    return prev.then(function (results) {
-      return Promise.delay(500)
-        .then(function () {
-          return getFriends(friendsUrl, startIndex)
-            .then(function (body) {
-              return results.concat(extractData(body));
+      return startIndices.reduce(function (prev, startIndex) {
+        return prev.then(function (results) {
+          return Promise.delay(500)
+            .then(function () {
+              return getFriends(cookie, friendsUrl, startIndex)
+                .then(function (body) {
+                  return results.concat(extractData(body));
+                });
             });
         });
+      }, Promise.resolve([]));
+    })
+    .then(function (results) {
+      fs.writeFileSync(username + '.json', JSON.stringify(results, undefined, 2));
     });
-  }, Promise.resolve([]));
-})
-.then(function (results) {
-  fs.writeFileSync(username + '.json', JSON.stringify(results, undefined, 2));
-});
+}
+
+var username = process.argv[2];;
+var cookie = process.argv[3];
+
+crawlUser(cookie, username);
