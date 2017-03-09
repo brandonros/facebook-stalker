@@ -1,12 +1,54 @@
+require('longjohn');
+
 var Promise = require('bluebird');
 var rp = require('request-promise');
 var cheerio = require('cheerio');
+var sqlite3 = require('sqlite3');
 var fs = require('fs');
+
+var selectors = [
+  '#root > div.be.bf > div.cc > div:nth-child(2) > div > a',
+  '#root > div.be.bf > div.cb > div:nth-child(2) > div > a',
+  '#root > div.bf.bg > div.cc > div:nth-child(2) > div > a',
+  '#root > div.bf.bg > div.cb > div:nth-child(2) > div > a',
+  '#root > div.be.bf > div.ca > div:nth-child(2) > div > a',
+  '#root > div.bf.bg > div.ch > div:nth-child(2) > div > a'
+];
+
+function getFriends(cookie, friendsUrl, startIndex) {
+  var options = {
+    method: 'GET',
+    uri: 'https://m.facebook.com/' + friendsUrl + '&startindex=' + startIndex,
+    headers: {
+      'Cookie': cookie,
+      'User-agent': 'Googlebot/2.1 (+http://www.googlebot.com/bot.html)'
+    }
+  };
+
+  console.log(new Date(), options.uri);
+
+  return rp(options);
+}
+
+function getProfile(cookie, username) {
+  var options = {
+    method: 'GET',
+    uri: 'https://m.facebook.com/' + username,
+    headers: {
+      'Cookie': cookie,
+      'User-agent': 'Googlebot/2.1 (+http://www.googlebot.com/bot.html)'
+    }
+  };
+
+  console.log(new Date(), options.uri);
+
+  return rp(options);
+}
 
 function extractData(body) {
   var $ = cheerio.load(body);
 
-  var rows = $('div.by.bz table > tbody > tr');
+  var rows = $('div.v.bi');
 
   var results = [];
 
@@ -17,60 +59,51 @@ function extractData(body) {
     var src = img.attr('src');
     var name = img.attr('alt');
 
-    var link = row.find('a.cb');
+    var link = $(row.find('a')[0]);
     var href = link.attr('href');
+
+    if (!href) { /* andy ding? */
+      console.log('Skipping no link ' + name);
+      return;
+    }
+
+    if (!src || !name) {
+      fs.writeFileSync('output.html', body);
+
+      throw new Error('Fucked');
+    }
 
     results.push({
       image: src,
       name: name,
-      link: 'https://facebook.com/' + href
+      link: href
     });
   });
 
   return results;
 }
 
-function getFriends(cookie, url, startIndex) {
-  var options = {
-    method: 'GET',
-    uri: url + '&startindex=' + startIndex,
-    headers: {
-      'Cookie': cookie,
-      'User-agent': 'Googlebot/2.1 (+http://www.googlebot.com/bot.html)'
-    }
-  };
-
-  console.log(new Date(), options.uri);
-
-  return rp(options);
-}
-
-function getProfile(cookie, url) {
-  var options = {
-    method: 'GET',
-    uri: url,
-    headers: {
-      'Cookie': cookie,
-      'User-agent': 'Googlebot/2.1 (+http://www.googlebot.com/bot.html)'
-    }
-  };
-
-  console.log(new Date(), options.uri);
-
-  return rp(options);
-}
-
 function extractNumFriends(body) {
   var $ = cheerio.load(body);
 
-  var text = $('#root > div.be.bf > div.cc > div:nth-child(2) > div > a').text();
-
   var exp = /See All Friends \(([^\)]*)\)/;
 
-  var results = exp.exec(text);
+  var results;
+
+  for (var i = 0; i < selectors.length; ++i) {
+    var text = $(selectors[i]).text();
+
+    results = exp.exec(text);
+
+    if (results) {
+      break;
+    }
+  }
 
   if (!results) {
-    return 0;
+    fs.writeFileSync('output.html', body);
+
+    throw new Error('Fucked');
   }
 
   return results[1];
@@ -79,11 +112,27 @@ function extractNumFriends(body) {
 function extractFriendsUrl(body) {
   var $ = cheerio.load(body);
 
-  return 'https://m.facebook.com' + $('#root > div.be.bf > div.cc > div:nth-child(2) > div > a').attr('href');
+  var friendsUrl = null;
+
+  for (var i = 0; i < selectors.length; ++i) {
+    friendsUrl = $(selectors[i]).attr('href');
+
+    if (friendsUrl) {
+      break;
+    }
+  }
+
+  if (!friendsUrl) {
+    fs.writeFileSync('output.html', body);
+
+    throw new Error('Fucked');
+  }
+
+  return friendsUrl;
 }
 
 function crawlUser(cookie, username) {
-  return getProfile(cookie, 'https://m.facebook.com/' + username)
+  return getProfile(cookie, username)
     .then(function (body) {
       var numFriends = extractNumFriends(body);
       var friendsUrl = extractFriendsUrl(body);
@@ -105,13 +154,100 @@ function crawlUser(cookie, username) {
             });
         });
       }, Promise.resolve([]));
-    })
-    .then(function (results) {
-      fs.writeFileSync(username + '.json', JSON.stringify(results, undefined, 2));
+    });
+}
+
+function lookupUser(username) {
+  return new Promise(function (resolve, reject) {
+    db.each('SELECT COUNT(*) AS count FROM relationships WHERE source_profile = ?', username, function (err, row) {
+      if (err) {
+        return reject(err);
+      }
+
+      resolve(row.count);
+    });
+  });
+}
+
+function lookupUserFriends(username) {
+  return new Promise(function (resolve, reject) {
+    db.all('SELECT link FROM relationships WHERE source_profile = ?', username, function (err, rows) {
+      if (err) {
+        return reject(err);
+      }
+
+      resolve(rows);
+    });
+  });
+}
+
+function initDb() {
+  return new Promise(function (resolve, reject) {
+    db.run('CREATE TABLE IF NOT EXISTS relationships (source_profile TEXT, name TEXT, image TEXT, link TEXT)', function (err) {
+      if (err) {
+        return reject(err);
+      }
+
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS relationships_source_profile_link_index ON relationships (source_profile, link)', function (err) {
+        if (err) {
+          return reject(err);
+        }
+
+        resolve();
+      });
+    });
+  });
+}
+
+function insertResults(username, results) {
+  db.serialize(function () {
+    results.forEach(function (result) {
+      var statement = db.prepare('INSERT INTO relationships (source_profile, name, image, link) VALUES (?, ?, ?, ?)');
+
+      statement.run(username, result.name, result.image, result.link, function (err) {
+        if (err && err.message.indexOf('SQLITE_CONSTRAINT') === -1) {
+          throw err;
+        }
+      });
+
+      statement.finalize();
+    });
+  });
+}
+
+function handleUser(username) {
+  return lookupUser(username)
+    .then(function (count) {
+      if (count === 0) {
+        return crawlUser(cookie, username)
+          .then(function (results) {
+            insertResults(username, results);
+          });
+      }
     });
 }
 
 var username = process.argv[2];;
 var cookie = process.argv[3];
 
-crawlUser(cookie, username);
+var db = new sqlite3.Database('db.sqlite3');
+
+initDb()
+.then(function () {
+  return handleUser(username);
+})
+.then(function () {
+  return lookupUserFriends(username);
+})
+.then(function (rows) {
+  return Promise.each(rows, function (row) {
+    return handleUser(row.link)
+      .catch(function (err) {
+        console.log(err.stack);
+        console.log(row.link);
+      });
+  });
+})
+.then(function () {
+  db.close();
+});
